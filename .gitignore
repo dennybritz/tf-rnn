@@ -1,5 +1,7 @@
+# Ignore saved checkpoints
 
-# Created by https://www.gitignore.io/api/ipythonnotebook,python
+checkpoints/
+
 
 ### IPythonNotebook ###
 # Temporary data

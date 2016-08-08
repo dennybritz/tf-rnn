@@ -5,7 +5,6 @@ def create_lm(vocab_size, embedding_dim, rnn_fn):
     # Unpack input data
     x_batch = x_dict["x"]
     x_batch_len = x_dict["x_len"]
-    y_list = tf.unpack(y_batch,  axis=1)
     batch_size = x_batch.get_shape().as_list()[0]
 
     # Summarize the sequence lengths in tensorboard
