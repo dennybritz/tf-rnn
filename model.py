@@ -2,13 +2,13 @@ import tensorflow as tf
 import numpy as np
 
 class SentenceSampleMonitor(tf.contrib.learn.monitors.EveryN):
-    def init(self, vocab, every_n_steps=100, first_n_steps=1):
+    def __init__(self, vocab, every_n_steps=100, first_n_steps=1):
         super(SentenceSampleMonitor, self).__init__(
             every_n_steps=every_n_steps,
             first_n_steps=first_n_steps)
         self._vocab = vocab
     def every_n_step_end(self, step, outputs):
-        return eval_model_with_sample(self._estimator, self._vocab)
+        return sample_from_estimator(self._estimator, self._vocab)
 
 def sample_from_estimator(
   estimator,
