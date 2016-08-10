@@ -1,4 +1,62 @@
 import tensorflow as tf
+import numpy as np
+
+class SentenceSampleMonitor(tf.contrib.learn.monitors.EveryN):
+    def init(self, vocab, every_n_steps=100, first_n_steps=1):
+        super(SentenceSampleMonitor, self).__init__(
+            every_n_steps=every_n_steps,
+            first_n_steps=first_n_steps)
+        self._vocab = vocab
+    def every_n_step_end(self, step, outputs):
+        return eval_model_with_sample(self._estimator, self._vocab)
+
+def sample_from_estimator(
+  estimator,
+  vocab,
+  max_sentence_len=10,
+  start_sentence=["SETENCE_START"]):
+  def make_feed_dict_for_sentence(pl, sent):
+    joined_sent = " ".join(sent)
+    x = np.array(list(vocab.transform([joined_sent])))
+    x_len = len(sent)
+    return { pl["x"]: x , pl["x_len"]: [x_len] }
+
+  checkpoint_path = tf.train.latest_checkpoint(estimator._model_dir)
+  if checkpoint_path is None:
+      print("No checkpoint found, not sampling from model.")
+      return False
+  print("Sampling from model at {}".format(checkpoint_path))
+
+  with tf.Graph().as_default():
+    with tf.Session() as sess:
+
+      # Create placeholder variables to feed
+      x_pl = {
+        "x": tf.placeholder(tf.int64, shape=[None, 40]),
+        "x_len": tf.placeholder(tf.int64, shape=[None])
+      }
+
+      # Get predictions tensor
+      probs_tensor, _, _ = estimator._model_fn(
+        x_pl, None, mode=tf.contrib.learn.ModeKeys.INFER)
+
+      # Restore from checkpoint
+      saver = tf.train.Saver()
+      saver.restore(sess, checkpoint_path)
+
+      # Sample until we reach end of sentence or max length
+      sentence = start_sentence
+      for i in range(max_sentence_len):
+          print(" ".join(sentence))
+          feed_dict = make_feed_dict_for_sentence(x_pl, sentence)
+          probs = sess.run(probs_tensor, feed_dict=feed_dict)
+          next_word_idx = np.random.choice(len(vocab.vocabulary_), p=probs[0][len(sentence)])
+          next_word = next(vocab.reverse([[next_word_idx]]))
+          sentence.append(next_word)
+          if next_word == "EOS":
+              break
+          if i == max_sentence_len:
+              break
 
 def create_lm(vocab_size, embedding_dim, rnn_fn):
   def model_fn(x_dict, y_batch, mode):
@@ -34,6 +92,7 @@ def create_lm(vocab_size, embedding_dim, rnn_fn):
         initializer=tf.zeros_initializer(vocab_size))
 
       # For each time step except the last, calculate logits and probabilities
+      # TODO: Can we do this without iteration?
       logit_list = []
       probs_list = []
       for t, o in enumerate(outputs[:-1]):
@@ -46,6 +105,9 @@ def create_lm(vocab_size, embedding_dim, rnn_fn):
       # Shape: [batch_size, T-1, num_classes]
       logits = tf.pack(logit_list, axis=1)
       probs = tf.pack(probs_list, axis=1)
+
+    if mode == tf.contrib.learn.ModeKeys.INFER:
+      return probs, None, None
 
     with tf.variable_scope("loss"):
       losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y_batch)
@@ -62,7 +124,9 @@ def create_lm(vocab_size, embedding_dim, rnn_fn):
       # Summary to keep track of non-zero fraction
       summ = tf.scalar_summary('loss_mask_zero_fraction', tf.nn.zero_fraction(mask))
       filtered_losses = losses * mask
-      mean_loss =  tf.reduce_mean(filtered_losses)
+
+      # Mean by actual sequence length (i.e. sum of sequence length)
+      mean_loss =  tf.reduce_sum(filtered_losses) / tf.reduce_sum(tf.to_float(x_batch_len) - 1.0)
 
     if mode == tf.contrib.learn.ModeKeys.TRAIN:
       train_op = tf.contrib.layers.optimize_loss(

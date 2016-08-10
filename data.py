@@ -17,7 +17,7 @@ def load_reddit_data(
   # Load Data into memory
   with open("./data/reddit_2008_01.txt") as f:
       reader = csv.reader(f)
-      data_raw = [x[0] + " EOS" for x in reader]
+      data_raw = ["SETENCE_START " + x[0] + " EOS" for x in reader]
 
   # Preprocess data
   vocab = tf.contrib.learn.preprocessing.text.VocabularyProcessor(
@@ -63,9 +63,9 @@ def create_tf_input_fn(x, x_len, y, batch_size=32, num_epochs=None):
     return { "x": x_batch, "x_len": x_batch_len}, y_batch
   return input_fn
 
-def create_train_dev_input_fns(ds, batch_size=32):
+def create_train_dev_input_fns(ds, batch_size=32, train_epochs=10):
   train_input_fn = create_tf_input_fn(
-    ds.x_train, ds.x_len_train, ds.y_train, batch_size)
+    ds.x_train, ds.x_len_train, ds.y_train, batch_size, train_epochs)
   dev_input_fn = create_tf_input_fn(
     ds.x_dev, ds.x_len_dev, ds.y_dev, batch_size, 1)
   return train_input_fn, dev_input_fn
