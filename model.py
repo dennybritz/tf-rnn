@@ -48,20 +48,37 @@ def sample_from_estimator(
       saver.restore(sess, checkpoint_path)
 
       # Sample until we reach end of sentence or max length
-      sentence = start_sentence
+      sentence = []
+      word_probs = []
+      sentence.append(*start_sentence)
       for i in range(max_sample_length):
           print(" ".join(sentence))
           feed_dict = make_feed_dict_for_sentence(x_pl, sentence)
           probs = sess.run(probs_tensor, feed_dict=feed_dict)
           next_word_idx = np.random.choice(
             len(vocab.vocabulary_),
-            p=probs[0][len(sentence)])
+            p=probs[0][len(sentence) - 1])
           next_word = next(vocab.reverse([[next_word_idx]]))
+          word_probs.append(probs[0][len(sentence) - 1][next_word_idx])
           sentence.append(next_word)
           if next_word == "EOS":
               break
           if i == max_sample_length:
               break
+      print(word_probs)
+
+def mask_by_lengths(X, lengths):
+  batch_size = X.get_shape().as_list()[0]
+  max_len = X.get_shape().as_list()[1]
+  tiled_idx = tf.tile(
+    tf.expand_dims(tf.range(max_len), 0),
+    [batch_size, 1])
+  tiled_idx = tf.to_int64(tiled_idx)
+  mask = tf.to_float(
+    tf.less(
+      tiled_idx,
+      tf.expand_dims(lengths, 1)))
+  return  X * mask
 
 def create_lm(vocab_size, embedding_dim, rnn_fn):
   def model_fn(x_dict, y_batch, mode):
@@ -69,6 +86,9 @@ def create_lm(vocab_size, embedding_dim, rnn_fn):
     x_batch = x_dict["x"]
     x_batch_len = x_dict["x_len"]
     batch_size = x_batch.get_shape().as_list()[0]
+
+    max_sequence_len = x_batch.get_shape().as_list()[1]
+    x_batch_len = tf.minimum(x_batch_len, max_sequence_len)
 
     # Summarize the sequence lengths in tensorboard
     tf.histogram_summary("seq_lengths", x_batch_len)
@@ -118,28 +138,18 @@ def create_lm(vocab_size, embedding_dim, rnn_fn):
       losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y_batch)
       # We only want to consider the losses that are < sequence length
       # We create a mask that sets all other losses to 0
-      tiled_idx = tf.tile(
-        tf.expand_dims(tf.range(len(outputs) - 1), 0),
-        [batch_size, 1])
-      tiled_idx = tf.to_int64(tiled_idx)
-      mask = tf.to_float(
-        tf.less(
-          tiled_idx,
-          tf.expand_dims(x_batch_len, 1)))
-      # Summary to keep track of non-zero fraction
-      summ = tf.scalar_summary('loss_mask_zero_fraction', tf.nn.zero_fraction(mask))
-      filtered_losses = losses * mask
+      filtered_losses = mask_by_lengths(losses, x_batch_len - 1)
 
       # Mean by actual sequence length (i.e. sum of sequence length)
-      mean_loss =  tf.reduce_sum(filtered_losses) / tf.reduce_sum(tf.to_float(x_batch_len) - 1.0)
+      mean_loss = tf.reduce_sum(filtered_losses) / tf.reduce_sum(tf.to_float(x_batch_len) - 1.0)
 
     if mode == tf.contrib.learn.ModeKeys.TRAIN:
       train_op = tf.contrib.layers.optimize_loss(
           loss=mean_loss,
           global_step=tf.contrib.framework.get_global_step(),
-          learning_rate=0.001,
+          learning_rate=0.1,
           clip_gradients=10.0,
-          optimizer="Adam")
+          optimizer="Adagrad")
       return probs, mean_loss, train_op
     else:
       return probs, mean_loss, None
