@@ -16,7 +16,7 @@ def sample_from_estimator(
   estimator,
   vocab,
   max_sample_length=10,
-  start_sentence=["SETENCE_START"]):
+  start_sentence=["SENTENCE_START"]):
 
   def make_feed_dict_for_sentence(pl, sent):
     joined_sent = " ".join(sent)
@@ -80,7 +80,7 @@ def mask_by_lengths(X, lengths):
       tf.expand_dims(lengths, 1)))
   return  X * mask
 
-def create_lm(vocab_size, embedding_dim, rnn_fn):
+def create_language_model_rnn(vocab_size, embedding_dim, rnn_fn):
   def model_fn(x_dict, y_batch, mode):
     # Unpack input data
     x_batch = x_dict["x"]

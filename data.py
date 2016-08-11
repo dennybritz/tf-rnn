@@ -2,6 +2,7 @@ from sklearn.cross_validation import train_test_split
 from collections import namedtuple
 import tensorflow as tf
 import numpy as np
+import nltk
 import csv
 
 Dataset = namedtuple("Dataset", [
@@ -17,12 +18,13 @@ def load_reddit_data(
   # Load Data into memory
   with open("./data/reddit_2008_01.txt") as f:
       reader = csv.reader(f)
-      data_raw = ["SETENCE_START " + x[0] + " EOS" for x in reader]
+      data_raw = ["SENTENCE_START "  + x[0].lower() + " SENTENCE_END" for x in reader]
 
   # Preprocess data
   vocab = tf.contrib.learn.preprocessing.text.VocabularyProcessor(
     max_document_length=max_document_length,
-    min_frequency=min_frequency)
+    min_frequency=min_frequency,
+    tokenizer_fn=lambda it: (nltk.tokenize.word_tokenize(s) for s in it))
   vocab.fit(data_raw)
 
   # Create numpy arrays from the data
@@ -48,6 +50,7 @@ def print_dataset_stats(ds):
   print("Vocabulary Size: {}".format(len(ds.vocab.vocabulary_)))
   print("Train Data Shape: {}".format(ds.x_train.shape))
   print("Dev Data Shape {}".format(ds.x_dev.shape))
+  print("Vocabulary size {}".format(len(ds.vocab.vocabulary_)))
 
 
 def create_tf_input_fn(x, x_len, y, batch_size=32, num_epochs=None):
