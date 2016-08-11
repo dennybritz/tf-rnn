@@ -7,14 +7,17 @@ class SentenceSampleMonitor(tf.contrib.learn.monitors.EveryN):
             every_n_steps=every_n_steps,
             first_n_steps=first_n_steps)
         self._vocab = vocab
+
     def every_n_step_end(self, step, outputs):
         return sample_from_estimator(self._estimator, self._vocab)
+
 
 def sample_from_estimator(
   estimator,
   vocab,
-  max_sentence_len=10,
+  max_sample_length=10,
   start_sentence=["SETENCE_START"]):
+
   def make_feed_dict_for_sentence(pl, sent):
     joined_sent = " ".join(sent)
     x = np.array(list(vocab.transform([joined_sent])))
@@ -32,7 +35,7 @@ def sample_from_estimator(
 
       # Create placeholder variables to feed
       x_pl = {
-        "x": tf.placeholder(tf.int64, shape=[None, 40]),
+        "x": tf.placeholder(tf.int64, shape=[None, vocab.max_document_length]),
         "x_len": tf.placeholder(tf.int64, shape=[None])
       }
 
@@ -46,16 +49,18 @@ def sample_from_estimator(
 
       # Sample until we reach end of sentence or max length
       sentence = start_sentence
-      for i in range(max_sentence_len):
+      for i in range(max_sample_length):
           print(" ".join(sentence))
           feed_dict = make_feed_dict_for_sentence(x_pl, sentence)
           probs = sess.run(probs_tensor, feed_dict=feed_dict)
-          next_word_idx = np.random.choice(len(vocab.vocabulary_), p=probs[0][len(sentence)])
+          next_word_idx = np.random.choice(
+            len(vocab.vocabulary_),
+            p=probs[0][len(sentence)])
           next_word = next(vocab.reverse([[next_word_idx]]))
           sentence.append(next_word)
           if next_word == "EOS":
               break
-          if i == max_sentence_len:
+          if i == max_sample_length:
               break
 
 def create_lm(vocab_size, embedding_dim, rnn_fn):
