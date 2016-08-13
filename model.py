@@ -2,20 +2,27 @@ import tensorflow as tf
 import numpy as np
 
 class SentenceSampleMonitor(tf.contrib.learn.monitors.EveryN):
-    def __init__(self, vocab, every_n_steps=100, first_n_steps=1):
+    def __init__(self, vocab, max_sample_length=10, num_samples=5, every_n_steps=100, first_n_steps=1):
         super(SentenceSampleMonitor, self).__init__(
             every_n_steps=every_n_steps,
             first_n_steps=first_n_steps)
         self._vocab = vocab
+        self.max_sample_length = max_sample_length
+        self.num_samples = num_samples
 
     def every_n_step_end(self, step, outputs):
-        return sample_from_estimator(self._estimator, self._vocab)
+        return sample_from_estimator(
+          estimator=self._estimator,
+          vocab=self._vocab,
+          max_sample_length=self.max_sample_length,
+          num_samples=self.num_samples)
 
 
 def sample_from_estimator(
   estimator,
   vocab,
   max_sample_length=10,
+  num_samples=5,
   start_sentence=["SENTENCE_START"]):
 
   def make_feed_dict_for_sentence(pl, sent):
@@ -48,43 +55,32 @@ def sample_from_estimator(
       saver.restore(sess, checkpoint_path)
 
       # Sample until we reach end of sentence or max length
-      sentence = []
-      word_probs = []
-      sentence.append(*start_sentence)
-      for i in range(max_sample_length):
-          print(" ".join(sentence))
-          feed_dict = make_feed_dict_for_sentence(x_pl, sentence)
-          probs = sess.run(probs_tensor, feed_dict=feed_dict)
-          next_word_idx = np.random.choice(
-            len(vocab.vocabulary_),
-            p=probs[0][len(sentence) - 1])
-          next_word = next(vocab.reverse([[next_word_idx]]))
-          word_probs.append(probs[0][len(sentence) - 1][next_word_idx])
-          sentence.append(next_word)
-          if next_word == "EOS":
-              break
-          if i == max_sample_length:
-              break
-      print(word_probs)
+      for _ in range(num_samples):
+        sentence = []
+        word_probs = []
+        sentence.append(*start_sentence)
+        for i in range(max_sample_length):
+            feed_dict = make_feed_dict_for_sentence(x_pl, sentence)
+            probs = sess.run(probs_tensor, feed_dict=feed_dict)
+            next_word_idx = np.random.choice(
+              len(vocab.vocabulary_),
+              p=probs[0][len(sentence) - 1])
+            next_word = next(vocab.reverse([[next_word_idx]]))
+            word_probs.append(probs[0][len(sentence) - 1][next_word_idx])
+            sentence.append(next_word)
+            if next_word == "SENTENCE_END":
+                break
+            if i == max_sample_length:
+                break
+        print(" ".join(sentence))
+        print(word_probs)
 
-def mask_by_lengths(X, lengths):
-  batch_size = X.get_shape().as_list()[0]
-  max_len = X.get_shape().as_list()[1]
-  tiled_idx = tf.tile(
-    tf.expand_dims(tf.range(max_len), 0),
-    [batch_size, 1])
-  tiled_idx = tf.to_int64(tiled_idx)
-  mask = tf.to_float(
-    tf.less(
-      tiled_idx,
-      tf.expand_dims(lengths, 1)))
-  return  X * mask
 
 def create_language_model_rnn(vocab_size, embedding_dim, rnn_fn):
   def model_fn(x_dict, y_batch, mode):
     # Unpack input data
     x_batch = x_dict["x"]
-    x_batch_len = x_dict["x_len"]
+    x_batch_len = tf.to_int32(x_dict["x_len"])
     batch_size = x_batch.get_shape().as_list()[0]
 
     max_sequence_len = x_batch.get_shape().as_list()[1]
@@ -135,21 +131,45 @@ def create_language_model_rnn(vocab_size, embedding_dim, rnn_fn):
       return probs, None, None
 
     with tf.variable_scope("loss"):
-      losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y_batch)
-      # We only want to consider the losses that are < sequence length
-      # We create a mask that sets all other losses to 0
-      filtered_losses = mask_by_lengths(losses, x_batch_len - 1)
 
-      # Mean by actual sequence length (i.e. sum of sequence length)
-      mean_loss = tf.reduce_sum(filtered_losses) / tf.reduce_sum(tf.to_float(x_batch_len) - 1.0)
+      # For each example, only consider the losses within the example sequence length
+      losses = []
+      logit_by_ex = tf.unpack(logits)
+      target_by_ex = tf.unpack(y_batch)
+      sequence_len_by_ex = tf.unpack(x_batch_len - tf.ones_like(x_batch_len))
+
+      # For each example in the batch...
+      for example_logits, example_length, example_targets in zip(logit_by_ex, sequence_len_by_ex, target_by_ex):
+
+        # Slice logits to the length of the example
+        logits_slice = tf.slice(
+          example_logits,
+          begin=[0, 0],
+          size=[1, 0] * (example_length) + [0, -1],
+          name="logits_slice")
+
+        # Slice targets (y) to the length of the example
+        target_slice = tf.slice(
+          example_targets,
+          begin=[0],
+          size=[1] * example_length,
+          name="target_slice")
+
+        # Mean loss for this example
+        example_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits_slice, target_slice, name="example_losses")
+        example_mean_loss = tf.reduce_mean(example_losses, name="example_mean_loss")
+        losses.append(example_mean_loss)
+
+      # Average Loss over the beach
+      mean_loss = tf.reduce_mean(losses, name="mean_loss")
 
     if mode == tf.contrib.learn.ModeKeys.TRAIN:
       train_op = tf.contrib.layers.optimize_loss(
           loss=mean_loss,
           global_step=tf.contrib.framework.get_global_step(),
-          learning_rate=0.1,
+          learning_rate=0.001,
           clip_gradients=10.0,
-          optimizer="Adagrad")
+          optimizer="Adam")
       return probs, mean_loss, train_op
     else:
       return probs, mean_loss, None
