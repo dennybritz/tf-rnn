@@ -6,14 +6,14 @@ class SentenceSampleMonitor(tf.contrib.learn.monitors.EveryN):
         super(SentenceSampleMonitor, self).__init__(
             every_n_steps=every_n_steps,
             first_n_steps=first_n_steps)
-        self._vocab = vocab
+        self.vocab = vocab
         self.max_sample_length = max_sample_length
         self.num_samples = num_samples
 
     def every_n_step_end(self, step, outputs):
         return sample_from_estimator(
           estimator=self._estimator,
-          vocab=self._vocab,
+          vocab=self.vocab,
           max_sample_length=self.max_sample_length,
           num_samples=self.num_samples)
 
@@ -26,11 +26,11 @@ def sample_from_estimator(
   start_sentence=["SENTENCE_START"]):
 
   def make_feed_dict_for_sentence(pl, sent):
-    joined_sent = " ".join(sent)
-    x = np.array(list(vocab.transform([joined_sent])))
-    x_len = len(sent)
+    x = np.array([vocab[_] for _ in sent])
+    x_len = len(x)
     return { pl["x"]: x , pl["x_len"]: [x_len] }
 
+  vocab_inverse = {v: k for k, v in vocab.items()}
   checkpoint_path = tf.train.latest_checkpoint(estimator._model_dir)
   if checkpoint_path is None:
       print("No checkpoint found, not sampling from model.")
@@ -65,7 +65,7 @@ def sample_from_estimator(
             next_word_idx = np.random.choice(
               len(vocab.vocabulary_),
               p=probs[0][len(sentence) - 1])
-            next_word = next(vocab.reverse([[next_word_idx]]))
+            next_word = vocab_inverse[next_word_idx]
             word_probs.append(probs[0][len(sentence) - 1][next_word_idx])
             sentence.append(next_word)
             if next_word == "SENTENCE_END":
@@ -76,14 +76,14 @@ def sample_from_estimator(
         print(word_probs)
 
 
-def create_language_model_rnn(vocab_size, embedding_dim, rnn_fn):
+def create_language_model_rnn(vocab_size, embedding_dim, rnn_fn, max_sequence_len):
   def model_fn(x_dict, y_batch, mode):
-    # Unpack input data
-    x_batch = x_dict["x"]
-    x_batch_len = tf.to_int32(x_dict["x_len"])
-    batch_size = x_batch.get_shape().as_list()[0]
 
-    max_sequence_len = x_batch.get_shape().as_list()[1]
+    # We don't make a prediction for the last token since it's always "End of Sentnece"
+    x_batch = x_dict["tokens"]
+    x_batch = tf.slice(x_batch, [0,0], tf.shape(y_batch))
+
+    x_batch_len = x_dict["length"]
     x_batch_len = tf.minimum(x_batch_len, max_sequence_len)
 
     # Summarize the sequence lengths in tensorboard
@@ -99,71 +99,48 @@ def create_language_model_rnn(vocab_size, embedding_dim, rnn_fn):
 
     # Run the embedded words through an RNN
     with tf.variable_scope("rnn"):
-      outputs, last_state = rnn_fn(x_embedded, x_batch_len)
+      cell = tf.nn.rnn_cell.GRUCell(128)
+      outputs, last_state = tf.nn.dynamic_rnn(
+        cell,
+        x_embedded,
+        dtype=tf.float32,
+        sequence_length=x_batch_len)
 
-    # Predict the next words
-    with tf.variable_scope("outputs"):
-      output_dim = outputs[0].get_shape()[1]
+    # Calculate the logits and the predictions
+    with tf.variable_scope("logits"):
       W = tf.get_variable(
         name="W",
         initializer=tf.contrib.layers.xavier_initializer(),
-        shape=[output_dim, vocab_size])
+        shape=[cell.output_size, vocab_size])
       b = tf.get_variable(
         name="b",
         initializer=tf.zeros_initializer(vocab_size))
 
-      # For each time step except the last, calculate logits and probabilities
-      # TODO: Can we do this without iteration?
-      logit_list = []
-      probs_list = []
-      for t, o in enumerate(outputs[:-1]):
-        logits = tf.nn.xw_plus_b(o, W, b, name="logits")
-        probs = tf.nn.softmax(logits, name="probs")
-        logit_list.append(logits)
-        probs_list.append(probs)
+      # For each time step, calculate the logits for the batch
+      outputs_by_time = tf.transpose(outputs, [1,0,2])
+      logits = tf.map_fn(lambda x_t: tf.batch_matmul(x_t, W), outputs_by_time, name="logits")
+      probs = tf.map_fn(tf.nn.softmax, logits, name="probs")
 
-      # Pack logits and probabilities into one tensor.
-      # Shape: [batch_size, T-1, num_classes]
-      logits = tf.pack(logit_list, axis=1)
-      probs = tf.pack(probs_list, axis=1)
+    with tf.variable_scope("loss"):
+      # For each time step, calculate the batch losses
+      targets_by_time = tf.transpose(y_batch)
+      # Ignore all losses where y=0 due to the padding
+      loss_weight_mask = tf.sign(tf.to_float(targets_by_time))
+
+      # Calculate the losses for each timestep. Final Shape: [T, B]
+      losses = tf.map_fn(
+        lambda _: _[2] * tf.nn.sparse_softmax_cross_entropy_with_logits(_[0], _[1], name="loss_by_t"),
+        [logits, targets_by_time, loss_weight_mask],
+        dtype=tf.float32,
+        name="losses")
+
+      # Calculate the mean loss
+      # We divide the "actual" number of prediction we made
+      mean_loss = tf.reduce_sum(losses) / tf.reduce_sum(loss_weight_mask)
 
     if mode == tf.contrib.learn.ModeKeys.INFER:
       return probs, None, None
-
-    with tf.variable_scope("loss"):
-
-      # For each example, only consider the losses within the example sequence length
-      losses = []
-      logit_by_ex = tf.unpack(logits)
-      target_by_ex = tf.unpack(y_batch)
-      sequence_len_by_ex = tf.unpack(x_batch_len - tf.ones_like(x_batch_len))
-
-      # For each example in the batch...
-      for example_logits, example_length, example_targets in zip(logit_by_ex, sequence_len_by_ex, target_by_ex):
-
-        # Slice logits to the length of the example
-        logits_slice = tf.slice(
-          example_logits,
-          begin=[0, 0],
-          size=[1, 0] * (example_length) + [0, -1],
-          name="logits_slice")
-
-        # Slice targets (y) to the length of the example
-        target_slice = tf.slice(
-          example_targets,
-          begin=[0],
-          size=[1] * example_length,
-          name="target_slice")
-
-        # Mean loss for this example
-        example_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(logits_slice, target_slice, name="example_losses")
-        example_mean_loss = tf.reduce_mean(example_losses, name="example_mean_loss")
-        losses.append(example_mean_loss)
-
-      # Average Loss over the beach
-      mean_loss = tf.reduce_mean(losses, name="mean_loss")
-
-    if mode == tf.contrib.learn.ModeKeys.TRAIN:
+    elif mode == tf.contrib.learn.ModeKeys.TRAIN:
       train_op = tf.contrib.layers.optimize_loss(
           loss=mean_loss,
           global_step=tf.contrib.framework.get_global_step(),
