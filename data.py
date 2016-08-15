@@ -28,7 +28,7 @@ def parse_sequence_example(example):
     example_name="sequence_example"
   )
 
-  return dict(context.items() + sequence.items())
+  return dict(x.items() | y.items())
 
 def create_tf_input_fn(filenames, batch_size, num_epochs=None):
   def input_fn():

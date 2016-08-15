@@ -76,7 +76,7 @@ def sample_from_estimator(
         print(word_probs)
 
 
-def create_language_model_rnn(vocab_size, embedding_dim, rnn_fn, max_sequence_len):
+def create_language_model_rnn(vocab_size, embedding_dim, max_sequence_len):
   def model_fn(x_dict, y_batch, mode):
 
     # We don't make a prediction for the last token since it's always "End of Sentnece"
