@@ -64,7 +64,7 @@ def make_dataset(sequence_iter, vocab):
   print("Transforming sequences...")
   for sequence in sequence_iter:
       x = [vocab[token] for token in sequence]
-      y = [vocab[token] for token in sequence[1:]]
+      y = [vocab[token] for token in sequence[1:]] + [0]
       yield x, y
   print("Transforming sequences done.")
 
