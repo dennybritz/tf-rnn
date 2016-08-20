@@ -4,7 +4,6 @@ from collections import Counter
 from collections import defaultdict
 from collections import namedtuple
 from sklearn.cross_validation import train_test_split
-import nltk
 import csv
 import os
 import tensorflow as tf
