@@ -92,7 +92,7 @@ def create_tfrecords_file(path, sequence_examples):
 
 
 if __name__ == "__main__":
-  raw_data = list(itertools.islice(load_reddit_data(), 0, 5000))
+  raw_data = list(load_reddit_data())
   data_tokenized = [nltk.word_tokenize(s) for s in raw_data]
 
   train_tokenized, dev_tokenized = train_test_split(
