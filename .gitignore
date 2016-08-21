@@ -1,10 +1,5 @@
 # Ignore saved checkpoints
 
-checkpoints/
-
-# Generated tfrecords and vocab files
-data/processed
-
 ### IPythonNotebook ###
 # Temporary data
 .ipynb_checkpoints/
